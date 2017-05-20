@@ -2,46 +2,84 @@ SYNOPSIS
 
 my is a tool written in Python for monitoring and manageming MariaDB Clusters.
 
+Configure the Cluster hosts and user details in cluster.py.
+
+Installation notes:
+
+pip install MySQL-python
+
 DETAILS
 
 my --help
-usage: my [-h] [--repl] [--audit] [--global_variable GLOBAL_VARIABLE]
-          [--stacktrace] [--mb] [--global_variables_diff {all,diff}]
+usage: my [-h] [--repl] [--audit] [--audit_file AUDIT_FILE]
+          [--global_variable GLOBAL_VARIABLE] [--stacktrace] [--mb]
+          [--global_variables_diff {all,diff}]
           [--exclude_prefix EXCLUDE_PREFIX] [--show_databases]
           [--show_slave_hosts] [--show_plugins] [--show_engines]
           [--global_status GLOBAL_STATUS] [--start_slave START_SLAVE]
-          [--stop_slave STOP_SLAVE]
+          [--stop_slave STOP_SLAVE] [--query QUERY]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --repl                Show replication summary for the cluster.
+  --repl
+                        Show replication and status summary for the cluster. The following colour scheme is used to indicate status;
+
+                        1. Host is down - RED
+                        2. Host is up but MariaDB is down - WHITE
+                        3. Host is up and MariaDB is up and replication is up - GREEN
+                        4. Host is up and MariaDB is up and replication is down - YELLOW
+
+                        Fields
+                        =======
+
+                        hostname: 	The hostname of the cluster node.
+                        port:		The tcp port of the MariaDB instance.
+                        cons:		Total number of MariaDB sessions.
+                        u_cons:		Total number of user connections. Note the 'user' connections are considered to be usernames ending with 'ro' or 'rw'.
+                        role:		The role of the cluster node. Note this is determined dynamically.
+                        		m = Master
+                        		ms = Master Slave
+                        		s = Slave
+                        		mms = Multi-Master Slave
+
+                        		A MariaDB is considered a master if Slaves are connected.
+                        		A MariaDB is considered a Slave if the command "SHOW SLAVE STATUS" returns something.
+                        		A MariaDB is considered a Multi-Master Slave if the command "SHOW SLAVE STATUS" returns more than one record.
+                        		A MariaDB can be a both a Master and a Slave.
+
+                        repl_detail:	If replication is running then some status information is displayed. This is in the following format;
+
+                        		<master hostname>:<master port> <master binlog> <master pos>
+
+                        		If the MariaDB instance is configured with multiple Master then multiple lines are displayed with the connection name.
+
+                        lag:		The number of seconds the Slave is lagging from its Master.
+                        gtid:		The GTID the Slave has last processed.
+                        read_only:	ON / OFF. Is the server set to read_only?
+
+                        ======================================================================
   --audit               Displays a selection of MariaDB configuration values.
+  --audit_file AUDIT_FILE
+                        Override the default choice of global variables displayed by my. This must be a text file located in the same directory as my called <anything>.cfg. It should contain a comma seperated list on a single line. The filename should be supplied without the .cfg extension.
   --global_variable GLOBAL_VARIABLE
                         Query a global variable for the MariaDB cluster.
-  --stacktrace          Python stacktrace is not show by default. Use this
-                        flag to enable it.
-  --mb                  Display relevant variables in MB in the --audit
-                        display.
+  --stacktrace          Python stacktrace is not show by default. Use this flag to enable it.
+  --mb                  Display relevant variables in MB in the --audit display.
   --global_variables_diff {all,diff}
-                        Perform a diff on the MariaDB global variables in the
-                        cluster.
+                        Perform a diff on the MariaDB global variables in the cluster.
   --exclude_prefix EXCLUDE_PREFIX
-                        Used in conjunction with --global_variables_diff to
-                        exclude variables with a prefix.
-  --show_databases      Display the databases hosted on each node in the
-                        cluster.
-  --show_slave_hosts    Display the slave hosts connected to each node in the
-                        cluster.
+                        Used in conjunction with --global_variables_diff to exclude variables with a prefix.
+  --show_databases      Display the databases hosted on each node in the cluster.
+  --show_slave_hosts    Display the slave hosts connected to each node in the cluster.
   --show_plugins        Display plugins installed in each node in the cluster.
   --show_engines        Display engines installed in each node in the cluster.
   --global_status GLOBAL_STATUS
                         Query a global status value for the MariaDB cluster.
   --start_slave START_SLAVE
-                        Slave to start in the format of <hostname>:<port>.
-                        Only the default slave connection is handled.
+                        Slave to start in the format of <hostname>:<port>. Only the default slave connection is handled.
   --stop_slave STOP_SLAVE
-                        Slave to stop in the format of <hostname>:<port>. Only
-                        the default slave connection is handled.
+                        Slave to stop in the format of <hostname>:<port>. Only the default slave connection is handled.
+  --query QUERY         Specify a query to execute against all hosts in the cluster.
 
 EXAMPLES
 
@@ -49,9 +87,9 @@ Display the status of a cluster
 
 my --repl
 
-hostname        port  cons  u_cons  role  repl_detail                                            lag  gtid         read_only
-srucidmdbmb1    3306  7     0       ms    srucidmdbmb2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  OFF
-srucidmdbmb2    3306  33    20      ms    srucidmdbmb1.ucid.local:3306 mysql-bin.000052 1031424  0    0-2-4715491  OFF
-srucidmdbsb1    3306  5     0       ms    srucidmdbmb1.ucid.local:3306 mysql-bin.000052 1031424  0    0-2-4715491  ON
-srucidmdbsb2    3306  29    19      ms    srucidmdbmb2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  ON
-srucidmdbbckb1  3306  5     0       ms    srucidmdbmb2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  ON
+hostname port  cons  u_cons  role  repl_detail                                       lag  gtid    read_only
+master1  3306  7     0       ms    master2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  OFF
+master2  3306  33    20      ms    master1.ucid.local:3306 mysql-bin.000052 1031424  0    0-2-4715491  OFF
+slave1   3306  5     0       ms    master1.ucid.local:3306 mysql-bin.000052 1031424  0    0-2-4715491  ON
+slave2   3306  29    19      ms    master2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  ON
+backup   3306  5     0       ms    master2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  ON
