@@ -1,0 +1,57 @@
+SYNOPSIS
+
+my is a tool written in Python for monitoring and manageming MariaDB Clusters.
+
+DETAILS
+
+my --help
+usage: my [-h] [--repl] [--audit] [--global_variable GLOBAL_VARIABLE]
+          [--stacktrace] [--mb] [--global_variables_diff {all,diff}]
+          [--exclude_prefix EXCLUDE_PREFIX] [--show_databases]
+          [--show_slave_hosts] [--show_plugins] [--show_engines]
+          [--global_status GLOBAL_STATUS] [--start_slave START_SLAVE]
+          [--stop_slave STOP_SLAVE]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --repl                Show replication summary for the cluster.
+  --audit               Displays a selection of MariaDB configuration values.
+  --global_variable GLOBAL_VARIABLE
+                        Query a global variable for the MariaDB cluster.
+  --stacktrace          Python stacktrace is not show by default. Use this
+                        flag to enable it.
+  --mb                  Display relevant variables in MB in the --audit
+                        display.
+  --global_variables_diff {all,diff}
+                        Perform a diff on the MariaDB global variables in the
+                        cluster.
+  --exclude_prefix EXCLUDE_PREFIX
+                        Used in conjunction with --global_variables_diff to
+                        exclude variables with a prefix.
+  --show_databases      Display the databases hosted on each node in the
+                        cluster.
+  --show_slave_hosts    Display the slave hosts connected to each node in the
+                        cluster.
+  --show_plugins        Display plugins installed in each node in the cluster.
+  --show_engines        Display engines installed in each node in the cluster.
+  --global_status GLOBAL_STATUS
+                        Query a global status value for the MariaDB cluster.
+  --start_slave START_SLAVE
+                        Slave to start in the format of <hostname>:<port>.
+                        Only the default slave connection is handled.
+  --stop_slave STOP_SLAVE
+                        Slave to stop in the format of <hostname>:<port>. Only
+                        the default slave connection is handled.
+
+EXAMPLES
+
+Display the status of a cluster
+
+my --repl
+
+hostname        port  cons  u_cons  role  repl_detail                                            lag  gtid         read_only
+srucidmdbmb1    3306  7     0       ms    srucidmdbmb2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  OFF
+srucidmdbmb2    3306  33    20      ms    srucidmdbmb1.ucid.local:3306 mysql-bin.000052 1031424  0    0-2-4715491  OFF
+srucidmdbsb1    3306  5     0       ms    srucidmdbmb1.ucid.local:3306 mysql-bin.000052 1031424  0    0-2-4715491  ON
+srucidmdbsb2    3306  29    19      ms    srucidmdbmb2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  ON
+srucidmdbbckb1  3306  5     0       ms    srucidmdbmb2.ucid.local:3306 mysql-bin.000046 7296621  0    0-2-4715491  ON

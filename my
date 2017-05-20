@@ -1,0 +1,637 @@
+#!/usr/bin/env python
+import os, time, os.path
+
+script_path = os.path.dirname(os.path.realpath(__file__))
+execfile(script_path + '/lib/mylib.py')
+execfile(script_path + '/lib/utility_functions.py')
+execfile(script_path + '/cluster.py')
+
+class bgcolours:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    MARIADB_DOWN = '\033[97m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+role = {
+	"master": "m",
+	"master_slave": "ms",
+	"slave": "s",
+	"multi_master_slave": "mms"
+}
+
+def host_mariadb_up(hostname, port):
+	"""
+	Returns two boolean values; host_is_up and mariadb_is_up
+	"""
+	net = NetworkTools()
+        host_is_up = False
+        mariadb_is_up = False
+        if net.ping(hostname):
+        	host_is_up = True
+        if host_is_up:
+        	if net.is_port_open(hostname, port):
+                	mariadb_is_up = True
+	return host_is_up, mariadb_is_up
+
+def mariadb_repl(mariadb_cluster,auth_details):
+
+	headers = [ 
+			"hostname", 
+			"port", 
+			"cons",
+			"u_cons",
+			"role", 
+			"repl_detail",
+			"lag", 
+			"gtid", 
+			"read_only"
+		 ]
+	format_string = "{0:<16} {1:<5} {2:<5} {3:<6} {4:<8} {5:<60} {6:<6} {7:<12} {8:<2}"
+
+	server_data = []
+
+	for server in mariadb_cluster:
+
+		server_dict = {}
+		net = NetworkTools()
+		host_is_up, mariadb_is_up = host_mariadb_up(server['hostname'], server['port'])
+		server_dict["Name"] = server["hostname"]
+		server_dict["Port"] = server["port"]
+		server_dict["host_is_up"] = host_is_up
+		server_dict["mariadb_is_up"] = mariadb_is_up
+		server_dict["connections"] = "-"
+		server_dict["user_connections"] = "-"
+		server_dict["role"] = "-"
+		server_dict["repl_detail"] = "-"
+		server_dict["slave_lag"] = "-"
+		server_dict["gtid"] = "-"
+		server_dict["read_only"] = "-"
+
+
+		if mariadb_is_up:
+			my = PyMaria(hostname=server_dict["Name"], port=server_dict["Port"], username=auth_details["username"], password=auth_details["password"])
+			server_dict["connections"] = len(my.show_processlist())
+			user_process_count = 0
+			for process in my.show_processlist():
+				if process["User"].endswith("_rw") or process["User"].endswith("_ro"):
+					user_process_count += 1
+			server_dict["user_connections"] = user_process_count
+			if my.is_master(True) and my.is_slave:
+				server_dict["role"] = "ms"
+			elif my.is_master(True) and my.is_slave == False:
+				server_dict["role"] = "m"
+			elif my.is_master(True) == False and my.is_slave:
+				server_dict["role"] = "s"
+			# Single Master
+			if my.is_single_master_slave():
+				if my.is_slave_running(my.slave_status[0]):
+					server_dict["repl_detail"] = my.slave_status[0]['Master_Host'] + ":" + str(my.slave_status[0]['Master_Port']) + " " + my.slave_status[0]['Master_Log_File'] + " " + str(my.slave_status[0]['Exec_Master_Log_Pos'])
+					server_dict["slave_lag"] = my.slave_status[0]['Seconds_Behind_Master']
+					server_dict["gtid"] = my.slave_status[0].get('Gtid_IO_Pos', "NA")
+				else:
+					server_dict["repl_detail"] = "Slave is not running"
+					if my.is_using_gtid(my.slave_status[0]):
+						server_dict["is_using_gtid"] = my.slave_status[0]["Gtid_IO_Pos"]
+					else:
+						server_dict["is_using_gtid"] = "NA"
+				server_dict["read_only"] = my.global_variables["read_only"]
+				server_data.append(server_dict)
+			# Multi-Master
+			else:
+				# Stuff for multi-master slaves here
+				if server_dict["role"] == "ms":
+					server_dict["role"] ="m/mms"
+				else:
+					server_dict["role"] = "mms"
+				if len(my.slave_status) > 0:
+					for slave in my.slave_status:
+						if my.is_slave_running(slave):
+							if slave['Connection_name'] == "": slave['Connection_name'] = 'Default'
+                                        		server_dict["repl_detail"] = slave['Connection_name'] + " " + slave['Master_Host'] + ":" + str(slave['Master_Port']) + " " + slave['Master_Log_File'] + " " + str(slave['Exec_Master_Log_Pos'])
+                                        		server_dict["gtid"] = slave.get('Gtid_IO_Pos', "NA")
+                                		else:
+                                        		server_dict["repl_detail"] = "Slave is not running"
+							if my.is_using_gtid(slave):
+                                                		server_dict["is_using_gtid"] = my.slave_status[0]["Gtid_IO_Pos"]
+                                        		else:
+                                                		server_dict["is_using_gtid"] = "NA"
+                                		server_dict["read_only"] = my.global_variables["read_only"]
+						# Copy so we don;t pass by reference https://docs.python.org/3/faq/programming.html#how-do-i-copy-an-object-in-python
+						server_data.append(server_dict.copy())
+				else: # for a master with no slaves connected
+                                        ms = my.show_master_status()
+                                        server_dict["role"] = "m"
+                                        server_dict["repl_detail"] = ms["File"] + " " + str(ms["Position"])
+                                        server_dict["read_only"] = my.global_variables["read_only"]
+                                        server_data.append(server_dict.copy())
+		else:
+			server_data.append(server_dict)
+
+	header_lookup = [
+				{"hostname": "Name"},
+                        	{"port": "Port"},
+                        	{"cons": "connections"},
+                        	{"u_cons": "user_connections"},
+                        	{"role": "role"},
+                        	{"repl_detail": "repl_detail"},
+                        	{"lag": "slave_lag"},
+                        	{"gtid": "gtid"},
+                        	{"read_only": "read_only"}
+			]
+
+	format_string = create_format_string(headers, header_lookup, server_data)					
+	print bgcolours.BOLD + format_string.format(*headers) + bgcolours.ENDC
+	
+	last_server = ""
+	for server in server_data:
+		# Embedded field colouring messes up for formatting. Maybe click can resolve this?
+		colour = None 
+		if server['host_is_up'] == False:
+			colour = bgcolours.FAIL
+		elif server['host_is_up'] == True and server['mariadb_is_up'] == False:
+			colour = bgcolours.MARIADB_DOWN
+		elif server['host_is_up'] == True and server['mariadb_is_up'] == True:
+			colour = bgcolours.OKGREEN
+		if "Slave is not running" in server["repl_detail"]:
+			colour = bgcolours.WARNING
+		#print server["repl_detail"]
+		#else:
+		#	repl_colour = bgcolours.OKGREEN
+		#if server["slave_lag"] > 0:
+		#	slave_lag_colour = bgcolours.WARNING
+		#else:
+		#	slave_lag_colour = bgcolours.OKGREEN
+
+		if last_server == server["Name"] + ":" + str(server["Port"]):
+			server["Name"] = "-"
+			server["Port"] = "-"
+			server["connections"] = "-"
+			server["user_connections"] = "-"
+			server["role"] = "-"
+			server["read_only"] = "-"
+		print colour + format_string.format(server["Name"],
+							server["Port"],
+							server["connections"],
+        						server["user_connections"],
+        						server["role"],
+        						server["repl_detail"],
+							server["slave_lag"],
+        						server["gtid"],
+        						server["read_only"]) + bgcolours.ENDC
+		last_server = server["Name"] + ":" + str(server["Port"])
+	
+def mariadb_audit(mariadb_cluster, auth_details, display_mb, audit_file):
+
+	if audit_file is None:
+		headers = [
+				"port", 
+				"version",
+				"server_id",
+				"innodb_buffer_pool_size",
+				"innodb_flush_method",
+				"innodb_log_file_size",
+				"innodb_flush_log_at_trx_commit",
+				"innodb_file_per_table",
+				"innodb_log_buffer_size",
+				"max_connections",
+				"sort_buffer_size",
+				"log_bin",
+				"binlog_format",
+				"expire_logs_days",
+				"sync_binlog",
+				"binlog_checksum",
+				"datadir",
+				"key_buffer_size"
+			]
+	else:
+		print "Hello"
+		# Load a list of custom attributes
+		f = os.path.dirname(os.path.realpath(__file__)) + "/" + audit_file + ".cfg"
+		if os.path.isfile(f):
+			# File should contain a list structure called headers
+			text_file = open(f, "r")
+			headers = text_file.read().strip().split(',')
+			text_file.close()
+		else:
+			raise Exception("audit cfg file not found: " + f)
+
+	# A list of dictionaries. One for each host
+	cluster_dicts = []
+
+	for server in mariadb_cluster:
+
+		host_is_up, mariadb_is_up = host_mariadb_up(server['hostname'], server['port'])
+
+		server_dict = {}
+		server_dict['hostname'] = server['hostname']
+		server_dict['port'] = server['port']
+		server_dict['host_is_up'] = host_is_up
+		server_dict['mariadb_is_up'] = mariadb_is_up 	
+
+		if mariadb_is_up:
+			my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+	
+		if display_mb:
+			div = 1048576 # bytes in a mb
+		else:
+			div = 1
+
+		if audit_file is None:
+			server_dict["version"] = my.version if mariadb_is_up else "-"
+			server_dict['server_id'] = my.global_variables['server_id'] if mariadb_is_up else "-"
+			server_dict['innodb_buffer_pool_size'] = int(my.global_variables['innodb_buffer_pool_size']) / div if mariadb_is_up else "-"
+			server_dict['innodb_flush_method'] = my.global_variables['innodb_flush_method'] if mariadb_is_up else "-"
+			server_dict['innodb_log_file_size'] = int(my.global_variables['innodb_log_file_size']) / div if mariadb_is_up else "-"
+			server_dict['innodb_flush_log_at_trx_commit'] = my.global_variables['innodb_flush_log_at_trx_commit'] if mariadb_is_up else "-"
+			server_dict['innodb_file_per_table'] = my.global_variables['innodb_file_per_table'] if mariadb_is_up else "-"
+			server_dict['innodb_log_buffer_size'] = int(my.global_variables['innodb_log_buffer_size']) / div if mariadb_is_up else "-"
+			server_dict['max_connections'] = my.global_variables['max_connections'] if mariadb_is_up else "-"
+			server_dict['sort_buffer_size'] = int(my.global_variables['sort_buffer_size']) / div if mariadb_is_up else "-"
+			server_dict['log_bin'] = my.global_variables['log_bin'] if mariadb_is_up else "-"
+			server_dict['binlog_format'] = my.global_variables['binlog_format'] if mariadb_is_up else "-"	
+			server_dict['expire_logs_days'] = my.global_variables['expire_logs_days'] if mariadb_is_up else "-"	
+			server_dict['sync_binlog'] = my.global_variables['sync_binlog'] if mariadb_is_up else "-"
+			server_dict['binlog_checksum'] = my.global_variables['binlog_checksum'] if mariadb_is_up else "-"
+			server_dict['datadir'] = my.global_variables['datadir'] if mariadb_is_up else "-"
+			server_dict['key_buffer_size'] = int(my.global_variables['key_buffer_size']) / div if mariadb_is_up else "-"
+		else:
+			for header in headers:
+				server_dict[header] = my.global_variables.get(header, "NA") if mariadb_is_up else "-"
+
+		cluster_dicts.append(server_dict)
+	# Build format string for each host
+	format_string = "{0:<40}"
+	server_names = []
+	position = 1
+	for server in mariadb_cluster:
+		format_string = format_string + " {" + str(position) + ":<17}"
+		position += 1
+		server_names.append(server['hostname'])
+	print format_string.format(" ", *server_names)
+	for header in headers:
+		line_items = [] 
+		for d in cluster_dicts:
+			line_items.append(d[header])
+		print format_string.format(header, *line_items)
+
+def mariadb_show_databases(mariadb_cluster, auth_details):
+	cluster_dicts = []
+	for server_dict in mariadb_cluster:
+		try:
+			my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+			cluster_dicts.append({"hostname": server_dict['hostname'],
+                        	              "port": server_dict['port'],
+					      "databases": my.show_databases()})
+		except Exception as excep:
+			cluster_dicts.append({"hostname": server_dict['hostname'],
+                                              "port": server_dict['port'],
+                                              "databases": [{"Database": "Host is down"}]})
+			if args.stacktrace:
+				print excep
+	for server_dict in cluster_dicts:
+		print server_dict["hostname"] + ":" + str(server_dict["port"])
+		for db in server_dict["databases"]:
+			print db["Database"]
+
+def mariadb_show_slave_hosts(mariadb_cluster, auth_details):
+        cluster_dicts = []
+        for server_dict in mariadb_cluster:
+		try:
+                	my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+                	cluster_dicts.append({"hostname": server_dict['hostname'],
+                        	              "port": server_dict['port'],
+                                	      "slave_hosts": my.show_slave_hosts() })
+		except Exception as excep:
+			cluster_dicts.append({"hostname": server_dict['hostname'],
+                                              "port": server_dict['port'],
+                                              "slave_hosts": [({"Server_id": None, "Master_id": None, "Host": "Host is down", "Port": None})]})
+                        if args.stacktrace:
+                                print excep
+        for server_dict in cluster_dicts:
+		if len(server_dict["slave_hosts"]) > 0 and server_dict["slave_hosts"][0]["Host"] != "Host is down":
+			slaves_connected = len(server_dict["slave_hosts"])
+		else:
+			slaves_connected = 0
+		if slaves_connected > 1:
+			word = "slaves"
+		else:
+			word = "slave"
+                print server_dict["hostname"] + ":" + str(server_dict["port"]) + " - " + str(slaves_connected) + " " + word + " connected"
+		print "{0:<10} {1:<10} {2:<20} {3:<6}".format("Server_id",
+							      "Master_id",
+							      "Host",
+							      "Port")
+                for slave in server_dict["slave_hosts"]:
+                        print "{0:<10} {1:<10} {2:<20} {3:<6}".format(slave["Server_id"],
+								      slave["Master_id"],
+								      slave["Host"],
+								      slave["Port"])
+
+def mariadb_show_plugins(mariadb_cluster, auth_details):
+        cluster_dicts = []
+        for server_dict in mariadb_cluster:
+                my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+                cluster_dicts.append({"hostname": server_dict['hostname'],
+                                      "port": server_dict['port'],
+                                      "plugins": my.show_plugins() })
+        for server_dict in cluster_dicts:
+                plugins_installed = len(server_dict["plugins"])
+                if plugins_installed > 1:
+                        word = "plugins"
+                else:
+                        word = "plugin"
+                print server_dict["hostname"] + ":" + str(server_dict["port"]) + " - " + str(plugins_installed) + " " + word + " installed"
+                for plugin in server_dict["plugins"]:
+                        print str(plugin)
+
+def mariadb_show_engines(mariadb_cluster, auth_details):
+        cluster_dicts = []
+        for server_dict in mariadb_cluster:
+                my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+                cluster_dicts.append({"hostname": server_dict['hostname'],
+                                      "port": server_dict['port'],
+                                      "engines": my.show_engines() })
+        for server_dict in cluster_dicts:
+                engines_installed = len(server_dict["engines"])
+                if engines_installed > 1:
+                        word = "engines"
+                else:
+                        word = "engine"
+                print server_dict["hostname"] + ":" + str(server_dict["port"]) + " - " + str(engines_installed) + " " + word + " installed"
+                for engine in server_dict["engines"]:
+                        print engine["Engine"]
+
+def mariadb_global_variable(mariadb_cluster, auth_details, global_variable):
+
+	cluster_dicts = []
+	for server_dict in mariadb_cluster:
+		host_is_up, mariadb_is_up = host_mariadb_up(server_dict['hostname'], server_dict['port'])
+		if host_is_up and mariadb_is_up:			
+			my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+			variable_value = None
+			if global_variable.lower() in my.global_variables.keys():
+				variable_value = my.global_variables[global_variable.lower()]
+			else:
+				variable_value = 'NA'
+			cluster_dicts.append({ "hostname": server_dict['hostname'],
+					       "port": server_dict['port'],
+						global_variable: variable_value,
+						"host_is_up": host_is_up,
+						"mariadb_is_up": mariadb_is_up })
+		else:
+			cluster_dicts.append({ "hostname": server_dict['hostname'],
+                                               "port": server_dict['port'],
+                                                global_variable: "-",
+						"host_is_up": host_is_up,
+						"mariadb_is_up": mariadb_is_up })
+	format_string = "{0:<20} {1:<6} {2:<15}"
+	print bgcolours.BOLD + format_string.format( "hostname", "port", global_variable) +  bgcolours.ENDC
+	for server_dict in cluster_dicts:
+		colour = None
+		if server_dict['host_is_up'] and server_dict['mariadb_is_up']:
+			colour = bgcolours.OKGREEN
+		elif server_dict['host_is_up'] and server_dict['mariadb_is_up'] == False:
+			colour = bgcolours.WARNING
+		else:
+			colour = bgcolours.FAIL
+		print colour + format_string.format( server_dict["hostname"], server_dict["port"], server_dict[global_variable]) + bgcolours.ENDC
+
+def mariadb_global_status(mariadb_cluster, auth_details, global_status):
+
+        cluster_dicts = []
+        for server_dict in mariadb_cluster:
+                host_is_up, mariadb_is_up = host_mariadb_up(server_dict['hostname'], server_dict['port'])
+                if host_is_up and mariadb_is_up:
+                        my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+                        status_value = None
+                        if global_status.lower() in my.global_status.keys():
+                                status_value = my.global_status[global_status.lower()]
+                        else:
+                                status_value = 'NA'
+                        cluster_dicts.append({ "hostname": server_dict['hostname'],
+                                               "port": server_dict['port'],
+                                                global_status: status_value,
+                                                "host_is_up": host_is_up,
+                                                "mariadb_is_up": mariadb_is_up })
+                else:
+                        cluster_dicts.append({ "hostname": server_dict['hostname'],
+                                               "port": server_dict['port'],
+                                                global_status: "-",
+                                                "host_is_up": host_is_up,
+                                                "mariadb_is_up": mariadb_is_up })
+        format_string = "{0:<20} {1:<6} {2:<15}"
+        print format_string.format(bgcolours.BOLD + "hostname", "port", global_status + bgcolours.ENDC)
+        for server_dict in cluster_dicts:
+                colour = None
+                if server_dict['host_is_up'] and server_dict['mariadb_is_up']:
+                        colour = bgcolours.OKGREEN
+                elif server_dict['host_is_up'] and server_dict['mariadb_is_up'] == False:
+                        colour = bgcolours.WARNING
+                else:
+                        colour = bgcolours.FAIL
+                print format_string.format(colour + server_dict["hostname"], server_dict["port"], server_dict[global_status] + bgcolours.ENDC)
+
+def mariadb_global_variables_diff(mariadb_cluster, auth_details, global_variables_diff, exclude_prefix):
+	print_all = False
+	if global_variables_diff == "all":
+		print_all = True
+	cluster_dicts = []
+	diff_count = 0
+	for server in mariadb_cluster:
+		my = PyMaria(hostname=server['hostname'], port=server['port'], username=auth_details["username"], password=auth_details["password"])
+		cluster_dicts.append({ "hostname": server['hostname'],
+					"global_variables": my.global_variables })
+	all_keys = []
+	for server in cluster_dicts: # Might have some variables on server and not on other so get all
+		all_keys = set(list(all_keys) + server['global_variables'].keys())
+	tmp = []
+	exclude_count = 0
+	if exclude_prefix is not None:
+		for item in all_keys:
+			if item.startswith(exclude_prefix) == False:
+				tmp.append(item)
+		exclude_count = len(all_keys) - len(tmp)
+		all_keys = tmp
+
+	for variable in all_keys:
+		variable_list = [] # Just teh variable value for easy comparison
+		server_variable_list = [] # hostname with variable value for diplay
+		for dictionary in cluster_dicts:
+			variable_list.append(dictionary['global_variables'].get(variable, "NA"))
+			server_variable_list.append({ "hostname": dictionary['hostname'], variable: dictionary['global_variables'].get(variable, "NA")})
+		if len(set(variable_list)) == 1 and global_variables_diff == "all":	
+			print bgcolours.OKGREEN + variable + " == cluster " + str(set(variable_list)) + bgcolours.ENDC
+		elif len(set(variable_list)) > 1:
+			diff_count += 1
+			result_string = ""
+			for s in server_variable_list:
+				result_string += s['hostname'] + " = " + s[variable] + " "			
+
+			print bgcolours.FAIL + variable + " differ on servers " + result_string + bgcolours.ENDC
+	print bgcolours.OKGREEN + "Out of " + str(len(all_keys)) + " global variables " + str(diff_count) + " differed between between servers." + bgcolours.ENDC
+	if exclude_count > 0 : print "Total excluded variables = " + str(exclude_count)
+
+def stop_slave(slave, mariadb_cluster):
+	if ":" not in slave:
+		raise Exception("Input must be in the format of <hostname>:<port>")
+	hostname, port = slave.split(":")
+	port = int(port)
+	done = False
+	for server in mariadb_cluster:
+		if server["hostname"] == hostname and server["port"] == port:
+			my = PyMaria(hostname=server['hostname'], port=server['port'], username=auth_details["username"], password=auth_details["password"])
+			if my.is_slave_running(my.slave_status[0]) == True:
+				my.stop_slave()
+				done = True
+				mariadb_repl(cluster, auth_details)
+				break
+			else:
+				print "Slave is already stopped"
+				time.sleep(2)
+				done = True
+				mariadb_repl(cluster, auth_details)
+				break
+	if not done:
+		print "That slave does not exist: {0}".format(slave)
+
+def start_slave(slave, mariadb_cluster):
+	if ":" not in slave:
+                raise Exception("Input must be in the format of <hostname>:<port>")
+        hostname, port = slave.split(":")
+	port = int(port)
+	done = False
+        for server in mariadb_cluster:
+                if server["hostname"] == hostname and server["port"] == port:
+                        my = PyMaria(hostname=server['hostname'], port=server['port'], username=auth_details["username"], password=auth_details["password"])
+			if my.is_slave_running(my.slave_status[0]) == False:
+                        	my.start_slave()
+				done = True
+				mariadb_repl(cluster, auth_details)
+				break
+			else:
+				print "Slave is already running"
+				time.sleep(2)
+				done = True
+				mariadb_repl(cluster, auth_details)
+				break
+	if not done:
+		print "That slave does not exist: {0}".format(slave)
+
+# Runs a custom query against all hsots in the cluster
+def mariadb_cluster_query(mariadb_cluster, auth_details, query):
+        cluster_dicts = []
+        for server_dict in mariadb_cluster:
+                my = PyMaria(hostname=server_dict['hostname'], port=server_dict['port'], username=auth_details["username"], password=auth_details["password"])
+                cluster_dicts.append({"hostname": server_dict['hostname'],
+                                      "port": server_dict['port'],
+                                      "resultset": my.run_query(query) })
+        for server_dict in cluster_dicts:
+                print server_dict["hostname"] + ":" + str(server_dict["port"])
+                for row in server_dict["resultset"]:
+                        print str(row)
+ 
+####################################################################################################
+
+import argparse, sys
+parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter )
+
+repl_help = """
+Show replication and status summary for the cluster. The following colour scheme is used to indicate status;
+
+1. Host is down - RED
+2. Host is up but MariaDB is down - WHITE
+3. Host is up and MariaDB is up and replication is up - GREEN
+4. Host is up and MariaDB is up and replication is down - YELLOW
+
+Fields
+=======
+
+hostname: 	The hostname of the cluster node.
+port:		The tcp port of the MariaDB instance.
+cons:		Total number of MariaDB sessions.
+u_cons:		Total number of user connections. Note the 'user' connections are considered to be usernames ending with 'ro' or 'rw'.
+role:		The role of the cluster node. Note this is determined dynamically.
+		m = Master
+		ms = Master Slave
+		s = Slave
+		mms = Multi-Master Slave
+
+		A MariaDB is considered a master if Slaves are connected.
+		A MariaDB is considered a Slave if the command "SHOW SLAVE STATUS" returns something.
+		A MariaDB is considered a Multi-Master Slave if the command "SHOW SLAVE STATUS" returns more than one record. 
+		A MariaDB can be a both a Master and a Slave.
+
+repl_detail:	If replication is running then some status information is displayed. This is in the following format;
+
+		<master hostname>:<master port> <master binlog> <master pos>
+		
+		If the MariaDB instance is configured with multiple Master then multiple lines are displayed with the connection name.
+
+lag:		The number of seconds the Slave is lagging from its Master.
+gtid:		The GTID the Slave has last processed.
+read_only:	ON / OFF. Is the server set to read_only?
+
+======================================================================
+"""
+
+parser.add_argument('--repl', action='store_true', default=False, help=repl_help)
+parser.add_argument('--audit', action='store_true', default=False, help="Displays a selection of MariaDB configuration values.")
+parser.add_argument('--audit_file', type=str, default=None, help="Override the default choice of global variables displayed by my. This must be a text file located in the same directory as my called <anything>.cfg. It should contain a comma seperated list on a single line. The filename should be supplied without the .cfg extension.")
+parser.add_argument('--global_variable', type=str, default=None,  help="Query a global variable for the MariaDB cluster.")
+parser.add_argument('--stacktrace', action='store_true', default=False, help="Python stacktrace is not show by default. Use this flag to enable it.")
+parser.add_argument('--mb', action='store_true', default=False, help="Display relevant variables in MB in the --audit display.")
+parser.add_argument('--global_variables_diff', type=str, choices=["all", "diff"], default=None, help="Perform a diff on the MariaDB global variables in the cluster.")
+parser.add_argument('--exclude_prefix', type=str, default=None, help="Used in conjunction with --global_variables_diff to exclude variables with a prefix.")
+parser.add_argument('--show_databases', action='store_true', default=False, help="Display the databases hosted on each node in the cluster.")
+parser.add_argument('--show_slave_hosts', action='store_true', default=False, help="Display the slave hosts connected to each node in the cluster.")
+parser.add_argument('--show_plugins', action='store_true', default=False, help="Display plugins installed in each node in the cluster.")
+parser.add_argument('--show_engines', action='store_true', default=False, help="Display engines installed in each node in the cluster.")
+
+parser.add_argument('--global_status', type=str, default=None,  help="Query a global status value for the MariaDB cluster.")
+
+parser.add_argument("--start_slave", type=str, default=None, help="Slave to start in the format of <hostname>:<port>. Only the default slave connection is handled.")
+parser.add_argument("--stop_slave", type=str, default=None, help="Slave to stop in the format of <hostname>:<port>. Only the default slave connection is handled.")
+
+parser.add_argument("--query", type=str, default=None, help="Specify a query to execute against all hosts in the cluster.")
+
+args = parser.parse_args()
+
+if args.stacktrace:
+	pass
+else:
+	sys.tracebacklimit = 0
+
+# print help when no args are provided
+if len(sys.argv) == 1:
+	parser.print_help()
+	sys.exit(1)
+
+if args.repl:
+	mariadb_repl(cluster, auth_details)
+if args.audit:
+	mariadb_audit(cluster, auth_details, args.mb, args.audit_file)	
+if args.global_variable is not None:
+	mariadb_global_variable(cluster, auth_details, args.global_variable)
+if args.global_status is not None:
+	mariadb_global_status(cluster, auth_details, args.global_status)
+if args.global_variables_diff is not None:
+	mariadb_global_variables_diff(cluster, auth_details, args.global_variables_diff, args.exclude_prefix)
+if args.show_databases:
+	mariadb_show_databases(cluster, auth_details)
+if args.show_slave_hosts:
+	mariadb_show_slave_hosts(cluster, auth_details)
+if args.show_plugins:
+	mariadb_show_plugins(cluster, auth_details)
+if args.show_engines:
+	mariadb_show_engines(cluster, auth_details)
+if args.stop_slave is not None:
+	stop_slave(args.stop_slave, cluster)
+if args.start_slave is not None:
+	start_slave(args.start_slave, cluster)
+if args.query is not None:
+	mariadb_cluster_query(cluster, auth_details, args.query)
